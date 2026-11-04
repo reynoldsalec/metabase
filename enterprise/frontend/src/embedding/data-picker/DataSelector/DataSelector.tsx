@@ -214,6 +214,7 @@ interface ComputedDataSelectorState {
 
 interface DataSelectorState extends ComputedDataSelectorState {
   activeStep: DataSelectorStep | null;
+  hasCardRequestFailed: boolean;
   isLoading: boolean;
   isError: boolean;
   isPopoverOpen: boolean;
@@ -265,6 +266,7 @@ export class UnconnectedDataSelector extends Component<
     const computedState = this._getComputedState(props, state);
     this.state = {
       activeStep: null,
+      hasCardRequestFailed: false,
       isLoading: false,
       isError: false,
       ...state,
@@ -436,9 +438,7 @@ export class UnconnectedDataSelector extends Component<
       try {
         await fetchQuestion(selectedCardId);
       } catch {
-        // Without the card's type, open on Saved Questions.
-        await this.switchToStep(SAVED_QUESTION_STEP);
-        return;
+        await this.setStateWithComputedState({ hasCardRequestFailed: true });
       }
 
       if (!this.isSearchLoading() && !this.state.activeStep) {
@@ -582,27 +582,8 @@ export class UnconnectedDataSelector extends Component<
   };
 
   async hydrateActiveStep(): Promise<void> {
-    const { selectedCardType } = this.props;
-    if (
-      this.isSavedEntitySelected() &&
-      selectedCardType &&
-      !this.canSelectCardType(selectedCardType)
-    ) {
-      // A card of a type the entity types leave out opens where a fresh pick
-      // starts, as a table does when tables are left out
-      const freshPickStep = this.getFreshPickStep();
-      await this.switchToStep(
-        freshPickStep,
-        this.getClearedStateForStep(DATA_BUCKET_STEP),
-      );
-      if (freshPickStep === DATABASE_STEP) {
-        await this.selectOnlyDatabase();
-      }
-    } else if (this.isSavedEntitySelected()) {
-      // The card's type arrives with `fetchQuestion`, which hydrates again
-      if (selectedCardType) {
-        await this.switchToStep(STEP_BY_CARD_TYPE[selectedCardType]);
-      }
+    if (this.isSavedEntitySelected()) {
+      await this.hydrateSavedEntityStep();
     } else if (
       this.props.canSelectTable &&
       // Schema id is explicitly set when going through the New > Question/Model flow,
@@ -634,12 +615,41 @@ export class UnconnectedDataSelector extends Component<
     }
   }
 
+  async hydrateSavedEntityStep(): Promise<void> {
+    // Without the card's type (its request failed), it opens as a saved question
+    const cardType = this.state.hasCardRequestFailed
+      ? "question"
+      : this.props.selectedCardType;
+    // The card's type arrives with `fetchQuestion`, and `canSelectCardType`
+    // reads the data `allLoading` waits for: both hydrate again
+    if (!cardType || this.props.allLoading) {
+      return;
+    }
+
+    if (this.canSelectCardType(cardType)) {
+      await this.switchToStep(STEP_BY_CARD_TYPE[cardType]);
+      return;
+    }
+
+    // A card that can't be picked here (left out by the entity types, or
+    // needing nested queries) opens where a fresh pick starts, as a table does
+    // when tables are left out
+    const freshPickStep = this.getFreshPickStep();
+    await this.switchToStep(
+      freshPickStep,
+      this.getClearedStateForStep(DATA_BUCKET_STEP),
+    );
+    if (freshPickStep === DATABASE_STEP) {
+      await this.selectOnlyDatabase();
+    }
+  }
+
+  // The checks the buckets use
   canSelectCardType(cardType: CardType): boolean {
-    const { canSelectModel, canSelectQuestion, canSelectMetric } = this.props;
     return {
-      model: canSelectModel,
-      question: canSelectQuestion,
-      metric: canSelectMetric,
+      model: this.hasUsableModels(),
+      question: this.hasSavedQuestions(),
+      metric: this.hasUsableMetrics(),
     }[cardType];
   }
 
@@ -704,18 +714,6 @@ export class UnconnectedDataSelector extends Component<
     ) {
       step = PARENT_STEP[step];
     }
-    // Except a saved entity with no bucket step to return to (reopened on a card
-    // when the bucket step has no choice, as with nested queries disabled): it
-    // goes back to the databases, or past them when there is only one. Without
-    // tables, as with `["model"]`, it has no back link.
-    if (
-      step === null &&
-      this.props.canSelectTable &&
-      SAVED_ENTITY_TYPE_BY_STEP[activeStep] &&
-      steps.includes(DATABASE_STEP)
-    ) {
-      return DATABASE_STEP;
-    }
     return step;
   }
 
@@ -757,16 +755,11 @@ export class UnconnectedDataSelector extends Component<
     }
   };
 
-  previousStep = async (): Promise<void> => {
+  previousStep = (): void => {
     const previousStep = this.getPreviousStep();
     if (previousStep) {
       const clearedState = this.getClearedStateForStep(previousStep);
-      await this.switchToStep(previousStep, clearedState, false);
-      if (previousStep === DATABASE_STEP) {
-        // Back from a reopened saved card lands here too: with one database,
-        // skip its one-entry list as the fresh path does
-        await this.selectOnlyDatabase();
-      }
+      this.switchToStep(previousStep, clearedState, false);
     }
   };
 
@@ -907,8 +900,8 @@ export class UnconnectedDataSelector extends Component<
 
   // The one place that picks the only database: from `skipSteps` going forward
   // with none set, and on the paths `skipSteps` doesn't reach: a join or a
-  // reopened table, where one is already set, and a reopened saved card going
-  // back or opening on the databases, which switch steps without skipping
+  // reopened table, where one is already set, and a reopened saved card opening
+  // on the databases, which switches steps without skipping
   selectOnlyDatabase = async (): Promise<void> => {
     const databases = this.getDatabases();
     if (databases.length === 1) {

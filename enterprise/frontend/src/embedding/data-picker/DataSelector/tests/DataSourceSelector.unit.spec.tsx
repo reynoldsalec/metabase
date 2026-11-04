@@ -15,6 +15,7 @@ import { createMockSettingsState, createMockState } from "__support__/state";
 import { renderWithProviders, screen, waitFor, within } from "__support__/ui";
 import { getNextId } from "__support__/utils";
 import { ROOT_COLLECTION } from "metabase/common/collections/constants";
+import { getShallowQuestions } from "metabase/metadata-store";
 import { reinitialize } from "metabase/plugins";
 import type { EmbeddingEntityType } from "metabase/redux/store/embedding-data-picker";
 import { defer } from "metabase/utils/promise";
@@ -598,7 +599,7 @@ describe("DataSourceSelector", () => {
       entityTypes: ["model", "table", "question", "metric", "semantic-layer"],
     };
 
-    it("should go back to the databases when reopened on a model with nested queries disabled", async () => {
+    it("should open the databases, not the models, when reopened on a model with nested queries disabled", async () => {
       const model = createMockCard({
         id: 140,
         name: "Orders model",
@@ -620,11 +621,6 @@ describe("DataSourceSelector", () => {
         databases: [sampleDatabase, otherDatabase],
         selectedCardId: model.id,
       });
-
-      expect(await screen.findByText("Models")).toBeInTheDocument();
-      expect(screen.getByText("Our analytics")).toBeInTheDocument();
-
-      await userEvent.click(screen.getByTestId("saved-entity-back-navigation"));
 
       expect(await screen.findByText("Sample Database")).toBeInTheDocument();
       expect(screen.getByText("Other Database")).toBeInTheDocument();
@@ -711,7 +707,7 @@ describe("DataSourceSelector", () => {
       expect(screen.queryByText("Metrics")).not.toBeInTheDocument();
     });
 
-    it("should go back to the tables, not a one-database list, when reopened on a model with one database and one schema and nested queries disabled", async () => {
+    it("should open the tables, not the models or a one-database list, when reopened on a model with one database and one schema and nested queries disabled", async () => {
       const model = createMockCard({
         id: 140,
         name: "Orders model",
@@ -725,9 +721,6 @@ describe("DataSourceSelector", () => {
         selectedCardId: model.id,
       });
 
-      expect(await screen.findByText("Models")).toBeInTheDocument();
-      await userEvent.click(screen.getByTestId("saved-entity-back-navigation"));
-
       expect(await screen.findByText("Orders")).toBeInTheDocument();
       expect(screen.getByText("Sample Database")).toBeInTheDocument();
       expect(screen.queryByText("Models")).not.toBeInTheDocument();
@@ -736,7 +729,7 @@ describe("DataSourceSelector", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("should go back to the schemas, not a one-database list, when reopened on a model with one database and two schemas and nested queries disabled", async () => {
+    it("should open the schemas, not the models or a one-database list, when reopened on a model with one database and two schemas and nested queries disabled", async () => {
       const model = createMockCard({
         id: 140,
         name: "Orders model",
@@ -768,9 +761,6 @@ describe("DataSourceSelector", () => {
         hasNestedQueriesEnabled: false,
         selectedCardId: model.id,
       });
-
-      expect(await screen.findByText("Models")).toBeInTheDocument();
-      await userEvent.click(screen.getByTestId("saved-entity-back-navigation"));
 
       expect(await screen.findByText("Accounting")).toBeInTheDocument();
       expect(screen.getByText("Finance")).toBeInTheDocument();
@@ -845,10 +835,63 @@ describe("DataSourceSelector", () => {
 
       setup({
         ...setupOpts,
+        // Saved questions to open on
+        availableModels: ["table", "dataset", "card"],
         selectedCardId: cardId,
       });
 
       expect(await screen.findByText("Saved Questions")).toBeInTheDocument();
+    });
+
+    it("should open the tables, not the saved questions, when reopened on a card whose request fails and nested queries are disabled", async () => {
+      const cardId = 140;
+      fetchMock.get(`path:/api/card/${cardId}`, { status: 500 });
+
+      setup({
+        ...setupOpts,
+        hasNestedQueriesEnabled: false,
+        selectedCardId: cardId,
+      });
+
+      expect(await screen.findByText("Orders")).toBeInTheDocument();
+      expect(screen.queryByText("Saved Questions")).not.toBeInTheDocument();
+    });
+
+    it('should open the data types, not the saved questions, when reopened on a card whose request fails and `entityTypes` = ["model", "table"]', async () => {
+      const cardId = 140;
+      fetchMock.get(`path:/api/card/${cardId}`, { status: 500 });
+
+      setup({
+        ...setupOpts,
+        availableModels: ["table", "dataset", "card"],
+        entityTypes: ["model", "table"],
+        selectedCardId: cardId,
+      });
+
+      expect(await screen.findByText("Models")).toBeInTheDocument();
+      expect(screen.getByText("Raw Data")).toBeInTheDocument();
+      expect(screen.queryByText("Saved Questions")).not.toBeInTheDocument();
+    });
+
+    it("should open the tables, not the models, when a join on a model is reopened with nested queries disabled", async () => {
+      const model = createMockCard({
+        id: 140,
+        name: "Orders model",
+        type: "model",
+      });
+      setupCardEndpoints(model);
+
+      setup({
+        ...setupOpts,
+        hasNestedQueriesEnabled: false,
+        isJoinStep: true,
+        querySourceType: "model",
+        selectedDatabaseId: SAMPLE_DB_ID,
+        selectedCardId: model.id,
+      });
+
+      expect(await screen.findByText("Orders")).toBeInTheDocument();
+      expect(screen.queryByText("Models")).not.toBeInTheDocument();
     });
 
     it("should only show data from the selected database when joining data", async () => {
@@ -1114,6 +1157,67 @@ describe("DataSourceSelector", () => {
         screen.queryByTestId("saved-entity-back-navigation"),
       ).not.toBeInTheDocument();
     });
+
+    it("should open the tables, not the saved questions, when reopened on a question with nested queries disabled", async () => {
+      const question = createMockCard({ id: 140, name: "Orders question" });
+      setupCardEndpoints(question);
+
+      setup({
+        ...setupOpts,
+        availableModels: ["table"],
+        hasNestedQueriesEnabled: false,
+        selectedCardId: question.id,
+      });
+
+      expect(await screen.findByText("Orders")).toBeInTheDocument();
+      expect(screen.queryByText("Saved Questions")).not.toBeInTheDocument();
+    });
+
+    it("should open the saved questions with the question selected when reopened before the database list has loaded", async () => {
+      const question = createMockCard({ id: 140, name: "Orders question" });
+      setupCardEndpoints(question);
+      const databaseList = defer<void>();
+      // Registered before `setup`'s database list, so this one answers
+      fetchMock.get({
+        url: "path:/api/database",
+        response: () =>
+          databaseList.promise.then(() => ({
+            data: [createSampleDatabase()],
+            total: 1,
+          })),
+        name: "deferred-database-list",
+      });
+
+      const { store } = setup({
+        ...setupOpts,
+        availableModels: ["table", "dataset", "card"],
+        entityTypes: ["table", "question"],
+        selectedCardId: question.id,
+      });
+      setupCollectionItemsEndpoint({
+        collection: ROOT_COLLECTION,
+        collectionItems: [
+          createMockCollectionItem({
+            id: question.id,
+            name: question.name,
+            model: "card",
+          }),
+        ],
+      });
+
+      // The card's type arrives first, while the database list is still loading
+      await waitFor(() =>
+        expect(
+          getShallowQuestions(store.getState())[question.id],
+        ).toBeDefined(),
+      );
+      databaseList.resolve();
+
+      expect(await screen.findByLabelText(question.name)).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+    });
   });
 
   describe("both metrics and tables are available", () => {
@@ -1166,6 +1270,24 @@ describe("DataSourceSelector", () => {
 
     it("should not offer metrics when nested queries are disabled", async () => {
       setup({ ...setupOpts, hasNestedQueriesEnabled: false });
+
+      expect(await screen.findByText("Orders")).toBeInTheDocument();
+      expect(screen.queryByText("Metrics")).not.toBeInTheDocument();
+    });
+
+    it("should open the tables, not the metrics, when reopened on a metric with nested queries disabled", async () => {
+      const metric = createMockCard({
+        id: 140,
+        name: "Orders metric",
+        type: "metric",
+      });
+      setupCardEndpoints(metric);
+
+      setup({
+        ...setupOpts,
+        hasNestedQueriesEnabled: false,
+        selectedCardId: metric.id,
+      });
 
       expect(await screen.findByText("Orders")).toBeInTheDocument();
       expect(screen.queryByText("Metrics")).not.toBeInTheDocument();
