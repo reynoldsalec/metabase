@@ -29,9 +29,13 @@
    [metabase.metabot.tools.error :as tools.error]
    [metabase.metabot.tools.shared :as shared]
    [metabase.util.i18n :refer [tru]]
+   [metabase.util.json :as json]
    [metabase.util.log :as log]
    [metabase.util.malli.registry :as mr]
-   [potemkin :as p]))
+   [potemkin :as p])
+  (:import
+   (com.fasterxml.jackson.core JsonProcessingException)
+   (com.fasterxml.jackson.core.io JsonEOFException)))
 
 (set! *warn-on-reflection* true)
 
@@ -150,16 +154,52 @@
     (sequential? v) "an array"
     :else           "an unsupported value"))
 
+(defn- json-text-error
+  "Where the JSON text `s` stops parsing, e.g. `unexpected \"]\" at line 1, column 72`, or nil when it parses."
+  [^String s]
+  (try
+    (json/decode s)
+    nil
+    (catch JsonEOFException _
+      "the text ends before the JSON is complete")
+    (catch JsonProcessingException e
+      (let [location (.getLocation e)
+            offset   (.getCharOffset location)]
+        (str "unexpected "
+             (when (< -1 offset (count s))
+               (str (pr-str (str (.charAt s (int offset)))) " "))
+             "at line " (.getLineNr location) ", column " (.getColumnNr location))))
+    (catch Exception _
+      "the text does not parse")))
+
+(defn- malformed-json-text
+  "Why `v` is quoted JSON text that does not parse, or nil when it is not.
+
+  A string that parses was already decoded before the tool ran, so the model sees only a type error for one that
+  does not. Saying the text was quoted, and where it breaks, gives the model something to fix; a type error alone
+  gets the same call sent again."
+  [v]
+  (when (and (string? v)
+             (let [trimmed (str/trim v)]
+               (or (str/starts-with? trimmed "{")
+                   (str/starts-with? trimmed "["))))
+    (json-text-error v)))
+
 (defn- argument-error-text
   [arguments field messages]
-  (let [texts (->> (tree-seq coll? seq messages) (filter string?) distinct vec)]
+  (let [texts (->> (tree-seq coll? seq messages) (filter string?) distinct vec)
+        value (get arguments field)]
     (condp = texts
       ["disallowed key"]       (str "`" (name field) "` is not a supported argument.")
       ["missing required key"] (str "`" (name field) "` is required.")
-      (str "`" (name field) "` " (str/join "; " texts)
-           (when (every? string? messages)
-             (str "; received " (json-type-name (get arguments field))))
-           "."))))
+      (if-let [json-error (and (= ["invalid type"] texts)
+                               (malformed-json-text value))]
+        (str "`" (name field) "` was sent as a string of JSON text, and the text is not valid JSON: " json-error
+             ". Fix the JSON and send the value itself, not a quoted string.")
+        (str "`" (name field) "` " (str/join "; " texts)
+             (when (every? string? messages)
+               (str "; received " (json-type-name value)))
+             ".")))))
 
 (defn- invalid-arguments-message
   "A repair-oriented message describing how `arguments` violate `schema`, or nil when they match."
