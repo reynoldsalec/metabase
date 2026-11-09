@@ -1,6 +1,7 @@
 import userEvent from "@testing-library/user-event";
 
 import { renderWithProviders, screen, within } from "__support__/ui";
+import { format } from "metabase/querying/expressions";
 import * as Lib from "metabase-lib";
 import { DEFAULT_TEST_QUERY, SAMPLE_PROVIDER } from "metabase-lib/test-helpers";
 import type { TestQuerySpec } from "metabase-types/api";
@@ -26,6 +27,54 @@ const SUMMARIZED_QUERY: TestQuerySpec = {
         },
       ],
       breakouts: [{ type: "column", name: "CREATED_AT", unit: "month" }],
+    },
+  ],
+};
+
+const FORMULA_QUERY: TestQuerySpec = {
+  stages: [
+    {
+      source: { type: "table", id: ORDERS_ID },
+      expressions: [
+        {
+          name: "Order date",
+          value: {
+            type: "operator",
+            operator: "datetime-add",
+            args: [
+              { type: "column", name: "CREATED_AT" },
+              { type: "literal", value: 1 },
+              { type: "literal", value: "day" },
+            ],
+          },
+        },
+        {
+          name: "Existing formula",
+          value: { type: "column", name: "Order date" },
+        },
+      ],
+      aggregations: [
+        {
+          name: "Sum total",
+          value: {
+            type: "operator",
+            operator: "sum",
+            args: [{ type: "column", name: "TOTAL" }],
+          },
+        },
+      ],
+      breakouts: [{ type: "column", name: "Order date", unit: "month" }],
+      orderBys: [{ type: "column", name: "Order date", unit: "month" }],
+      filters: [
+        {
+          type: "operator",
+          operator: ">",
+          args: [
+            { type: "column", name: "Order date" },
+            { type: "literal", value: "2024-01-01" },
+          ],
+        },
+      ],
     },
   ],
 };
@@ -82,6 +131,95 @@ const getValuesField = () => screen.getByLabelText("Add a value by name");
 const getGroupingField = () => screen.getByLabelText("Add a grouping by name");
 
 describe("SummaryWells", () => {
+  it.each(["Order date", "Sum total"])(
+    "renames %s and its result column without changing the formula",
+    async (name) => {
+      const { onChange } = setup({ spec: FORMULA_QUERY });
+
+      await userEvent.dblClick(
+        screen.getByRole("button", {
+          name:
+            name === "Order date"
+              ? "Rename Order date: Month"
+              : `Rename ${name}`,
+        }),
+      );
+      const input = screen.getByRole("textbox", { name: `Name of ${name}` });
+      expect(input).toHaveFocus();
+      expect(input).toHaveValue(name);
+      await userEvent.keyboard("  Renamed formula  {Enter}");
+
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(
+        name === "Order date" ? getGroupingField() : getValuesField(),
+      ).toHaveFocus();
+      const [query] = onChange.mock.calls[0];
+      const resultNames = Lib.returnedColumns(query, STAGE_INDEX).map(
+        (column) => Lib.displayInfo(query, STAGE_INDEX, column).displayName,
+      );
+      expect(resultNames).toContain(
+        name === "Order date" ? "Renamed formula: Month" : "Renamed formula",
+      );
+      expect(resultNames).not.toContain(name);
+      const options = {
+        query,
+        stageIndex: STAGE_INDEX,
+        availableColumns: Lib.expressionableColumns(query, STAGE_INDEX),
+      };
+      const [expression] = Lib.expressions(query, STAGE_INDEX);
+      const [aggregation] = Lib.aggregations(query, STAGE_INDEX);
+      const [filter] = Lib.filters(query, STAGE_INDEX);
+      expect(await format(expression, options)).toBe(
+        'datetimeAdd([Created At], 1, "day")',
+      );
+      expect(await format(aggregation, options)).toBe("Sum([Total])");
+      const dimensionName =
+        name === "Order date" ? "Renamed formula" : "Order date";
+      expect(await format(filter, options)).toBe(
+        `[${dimensionName}] > "2024-01-01"`,
+      );
+      const [breakout] = Lib.breakouts(query, STAGE_INDEX);
+      expect(Lib.temporalBucket(breakout)).not.toBeNull();
+      expect(Lib.toLegacyQuery(query)).toMatchObject({
+        query: {
+          "order-by": [
+            [
+              "asc",
+              ["expression", dimensionName, { "temporal-unit": "month" }],
+            ],
+          ],
+        },
+      });
+    },
+  );
+
+  it("cancels renaming with Escape and commits a nonempty name on blur", async () => {
+    const { onChange, getLastChange } = setup({ spec: FORMULA_QUERY });
+    await userEvent.dblClick(
+      screen.getByRole("button", { name: "Rename Order date: Month" }),
+    );
+    await userEvent.keyboard("Discard this name{Escape}");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("textbox", { name: "Name of Order date" }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.dblClick(
+      screen.getByRole("button", { name: "Rename Order date: Month" }),
+    );
+    await userEvent.keyboard("{Backspace}");
+    await userEvent.click(getGroupingField());
+    expect(onChange).not.toHaveBeenCalled();
+
+    await userEvent.dblClick(
+      screen.getByRole("button", { name: "Rename Order date: Month" }),
+    );
+    await userEvent.keyboard("Existing formula");
+    await userEvent.click(getGroupingField());
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(getLastChange().dimensions).toEqual(["Existing formula (1): Month"]);
+  });
+
   it("shows the stage's aggregations and breakouts as chips", () => {
     setup();
 

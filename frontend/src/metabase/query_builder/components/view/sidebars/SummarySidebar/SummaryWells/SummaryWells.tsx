@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { t } from "ttag";
 
 import { Box } from "metabase/ui";
@@ -17,6 +17,7 @@ import {
   getWellFieldSections,
 } from "../utils";
 
+import { DimensionChip } from "./DimensionChip";
 import {
   DraftFormulaChip,
   type DraftFormulaChipProps,
@@ -24,7 +25,6 @@ import {
 import { SummaryWell } from "./SummaryWell";
 import { SummaryWellInput } from "./SummaryWellInput";
 import { ValueChip } from "./ValueChip";
-import { WellChip } from "./WellChip";
 
 type SummaryWellsProps = {
   query: Lib.Query;
@@ -45,6 +45,8 @@ export function SummaryWells({
   onPick,
   onChange,
 }: SummaryWellsProps) {
+  const valueInputRef = useRef<HTMLInputElement>(null);
+  const columnInputRef = useRef<HTMLInputElement>(null);
   const valueItems = useMemo(
     () => getValueItems(query, stageIndex),
     [query, stageIndex],
@@ -70,6 +72,7 @@ export function SummaryWells({
       <SummaryWell wellId="values" title={t`Summarize by`}>
         <SummaryWellInput
           wellId="values"
+          inputRef={valueInputRef}
           formulaInput={formulaInputs?.values}
           sections={valueSections}
           hasItems={valueItems.length > 0}
@@ -89,6 +92,7 @@ export function SummaryWells({
               stageIndex={stageIndex}
               item={item}
               onChange={onChange}
+              onFocusInput={() => valueInputRef.current?.focus()}
               onRemove={() => handleRemove(item.clause)}
             />
           ))}
@@ -100,6 +104,7 @@ export function SummaryWells({
       <SummaryWell wellId="columns" title={t`Group by`}>
         <SummaryWellInput
           wellId="columns"
+          inputRef={columnInputRef}
           formulaInput={formulaInputs?.columns}
           sections={columnSections}
           hasItems={dimensionItems.length > 0}
@@ -112,13 +117,15 @@ export function SummaryWells({
           }}
         >
           {dimensionItems.map((item) => (
-            <WellChip
+            <DimensionChip
               key={item.key}
-              label={item.label}
+              query={query}
+              stageIndex={stageIndex}
+              item={item}
+              onChange={onChange}
+              onFocusInput={() => columnInputRef.current?.focus()}
               onRemove={() => handleRemove(item.clause)}
-            >
-              <span className={S.chipLabel}>{item.label}</span>
-            </WellChip>
+            />
           ))}
           {draftFormula?.wellId === "columns" && (
             <DraftFormulaChip {...draftFormula} />

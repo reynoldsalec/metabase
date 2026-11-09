@@ -48,6 +48,7 @@ export type SummaryValueItem = {
 
 export type SummaryDimensionItem = {
   clause: Lib.BreakoutClause;
+  expression?: Lib.ExpressionClause;
   key: string;
   label: string;
 };
