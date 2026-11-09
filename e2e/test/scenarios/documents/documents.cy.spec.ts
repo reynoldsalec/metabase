@@ -1684,6 +1684,7 @@ describe("documents", () => {
       H.assertDocumentCardVizType(TIMESERIES_CARD_3, "Bar");
     });
   });
+
   describe("metabot (#73690)", () => {
     const GENERATED_CARD_NAME = "Feature requests mentioned twice";
     const MOCK_LLM_PORT = 6124;
