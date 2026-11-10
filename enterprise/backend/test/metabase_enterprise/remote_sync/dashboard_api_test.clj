@@ -157,6 +157,31 @@
       (is (= 1 (t2/count :model/Dashboard :name "Dashboard to Copy"))
           "No new dashboard should be created after failed copy"))))
 
+(deftest api-deep-copy-dashboard-into-remote-synced-copies-goal-sources-test
+  (testing "POST /api/dashboard/:id/copy deep-copies a goal source from outside remote-synced along with the dashboard,
+           so the dependency check passes"
+    (mt/with-model-cleanup [:model/Card :model/Dashboard]
+      (mt/with-temp [:model/Collection {remote-synced-id :id} {:name "Remote-Synced" :location "/"
+                                                               :is_remote_synced true}
+                     :model/Collection {target-id :id} {:name "Target" :location (format "/%d/" remote-synced-id)
+                                                        :is_remote_synced true}
+                     :model/Collection {source-id :id} {:name "Source" :location "/" :type nil}
+                     :model/Dashboard {dash-id :id} {:name "Dashboard to Copy" :collection_id source-id}
+                     :model/Card {goal-source-id :id} {:name "Goal source" :collection_id source-id
+                                                       :dataset_query (mt/mbql-query venues {:aggregation [[:count]]})}
+                     :model/Card {chart-id :id} {:name "Chart" :collection_id source-id
+                                                 :dataset_query (mt/mbql-query venues {:aggregation [[:count]]})}
+                     :model/DashboardCard _ {:dashboard_id dash-id :card_id chart-id
+                                             :visualization_settings
+                                             {:graph.goal_value {:id goal-source-id :type "card" :column "count"}}}]
+        (let [response (mt/user-http-request :crowberto :post 200 (format "dashboard/%d/copy" dash-id)
+                                             {:collection_id target-id :is_deep_copy true})
+              copied   (t2/select-fn->fn :name :id :model/Card :collection_id target-id)]
+          (is (= #{"Goal source" "Chart"} (set (keys copied))))
+          (is (= [(copied "Goal source")]
+                 (map #(get-in % [:visualization_settings :graph.goal_value :id])
+                      (t2/select :model/DashboardCard :dashboard_id (:id response))))))))))
+
 (deftest api-copy-dashboard-outside-remote-synced-no-dependency-checking-test
   (testing "POST /api/dashboard/:id/copy to non-remote-synced collection does not check dependencies"
     (mt/with-temp [:model/Collection {non-remote-synced-id :id} {:name "Non-Remote-Synced" :location "/" :type nil}

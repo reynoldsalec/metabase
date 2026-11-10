@@ -819,7 +819,8 @@
            sync
            timeline
            util
-           util.config}
+           util.config
+           visualization-settings}
    :model-exports #{:model/Dashboard
                     :model/DashboardCard
                     :model/DashboardCardSeries
@@ -950,7 +951,8 @@
            search
            settings
            staleness
-           util}
+           util
+           visualization-settings}
    :model-exports #{:model/Document}
    :model-imports #{:model/Card
                     :model/Collection

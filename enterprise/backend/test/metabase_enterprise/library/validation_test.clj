@@ -151,6 +151,29 @@
                        {:type :question :dashboard_id copy-id :collection_id (:id allow-dashboards) :collection_position nil}]
                       (sort-by (comp name :type) cards))))))))))
 
+(deftest deep-copy-dashboard-into-library-dashboards-keeps-goal-sources-test
+  (testing "a deep copy into a dashboards-only collection doesn't copy a question only a goal reads, which would have
+           nowhere to live, so the goal keeps reading the original"
+    (mt/with-premium-features #{:library}
+      (let [mp    (mt/metadata-provider)
+            query (lib/query mp (lib.metadata/table mp (mt/id :venues)))]
+        (mt/with-model-cleanup [:model/Card :model/Dashboard]
+          (mt/with-temp [:model/Collection    allow-dashboards {:name "Test Base Library"
+                                                                :type collection/library-dashboards-collection-type}
+                         :model/Collection    regular          {:name "Regular Collection"}
+                         :model/Card          source           {:collection_id (:id regular) :dataset_query query}
+                         :model/Card          chart            {:collection_id (:id regular) :dataset_query query
+                                                                :visualization_settings
+                                                                {:graph.goal_value
+                                                                 {:id (:id source) :type "card" :column "count"}}}
+                         :model/Dashboard     dashboard        {:collection_id (:id regular)}
+                         :model/DashboardCard _                {:dashboard_id (:id dashboard) :card_id (:id chart)}]
+            (let [copy-id (:id (mt/user-http-request :crowberto :post 200 (str "dashboard/" (:id dashboard) "/copy")
+                                                     {:collection_id (:id allow-dashboards) :is_deep_copy true}))]
+              (is (=? [{:dashboard_id copy-id
+                        :visualization_settings {:graph.goal_value {:id (:id source)}}}]
+                      (t2/select :model/Card :collection_id (:id allow-dashboards)))))))))))
+
 (deftest move-dashboard-into-library-dashboards-test
   (mt/with-premium-features #{:library}
     (mt/with-temp [:model/Collection allow-dashboards {:name "Test Base Library" :type collection/library-dashboards-collection-type}
