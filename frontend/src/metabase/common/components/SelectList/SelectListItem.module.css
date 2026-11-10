@@ -17,12 +17,12 @@
 
 .highlight {
   &.selected {
-    background-color: var(--mb-color-core-brand);
+    background-color: var(--mb-color-background_surface-brand-strong);
   }
 
   @media (hover: hover) {
     &:hover {
-      background-color: var(--mb-color-core-brand);
+      background-color: var(--mb-color-background_surface-brand-strong);
     }
   }
 }
