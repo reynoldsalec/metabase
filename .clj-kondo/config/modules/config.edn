@@ -4530,6 +4530,7 @@
            app-db
            audit-app
            channel
+           core.initialization-status
            driver
            events
            lib.schema

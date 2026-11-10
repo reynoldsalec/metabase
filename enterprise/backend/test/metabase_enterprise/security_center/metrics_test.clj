@@ -5,6 +5,8 @@
    [metabase-enterprise.security-center.health-checks :as health-checks]
    [metabase-enterprise.security-center.metrics :as metrics]
    [metabase.analytics.core :as analytics.core]
+   [metabase.initialization-status.core :as init-status]
+   [metabase.premium-features.core :as premium-features]
    [metabase.test :as mt]
    [metabase.test.fixtures :as fixtures]))
 
@@ -161,3 +163,33 @@
             (metrics/set-health-checks-last-run!)
             (is (= 1793966400.0
                    (mt/metric-value system :metabase-security-center/health-checks-last-run-timestamp-seconds)))))))))
+
+(defn- health-check-gauge
+  [system status]
+  (mt/metric-value system :metabase-security-center/health-checks
+                   {:check_id "https-redirect", :severity "medium", :status status}))
+
+(defn- run-health-check-collector!
+  [& {:keys [complete? enabled?]}]
+  (mt/with-dynamic-fn-redefs [init-status/complete?                     (constantly complete?)
+                              premium-features/security-center-enabled? (constantly enabled?)]
+    ((:f (analytics.core/pull-collector ::metrics/health-check-gauges)))))
+
+(deftest health-check-gauges-pull-collector-test
+  (with-redefs [health-checks/checks     two-checks
+                health-checks/run-checks (constantly [{:id :https-redirect, :severity :medium, :status :fail}])]
+    (testing "runs at most once every 5 minutes"
+      (is (= 300 (:min-interval-s (analytics.core/pull-collector ::metrics/health-check-gauges)))))
+    (testing "sets the status gauge from a run of the checks"
+      (mt/with-prometheus-system! [_ system]
+        (run-health-check-collector! :complete? true, :enabled? true)
+        (is (= 1.0 (health-check-gauge system "fail")))
+        (is (= 0.0 (health-check-gauge system "pass")))))
+    (testing "sets nothing before the initialization is complete"
+      (mt/with-prometheus-system! [_ system]
+        (run-health-check-collector! :complete? false, :enabled? true)
+        (is (= 0.0 (health-check-gauge system "fail")))))
+    (testing "sets nothing when Security Center is off"
+      (mt/with-prometheus-system! [_ system]
+        (run-health-check-collector! :complete? true, :enabled? false)
+        (is (= 0.0 (health-check-gauge system "fail")))))))
